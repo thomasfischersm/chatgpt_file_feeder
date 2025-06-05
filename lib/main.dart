@@ -1,194 +1,212 @@
 import 'dart:io';
-
-import 'package:animated_tree_view/animated_tree_view.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-
-/// Change this to your preferred startup folder
-const String defaultPath = r"C:\";
+import 'package:flutter/services.dart';
 
 void main() {
-  runApp(const MyApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(FileCollectorApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class FileCollectorApp extends StatefulWidget {
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'File Collector',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: const FileCollectorPage(),
-    );
-  }
+  _FileCollectorAppState createState() => _FileCollectorAppState();
 }
 
-class FileCollectorPage extends StatefulWidget {
-  const FileCollectorPage({super.key});
-  @override
-  State<FileCollectorPage> createState() => _FileCollectorPageState();
-}
+class _FileCollectorAppState extends State<FileCollectorApp> {
+  // ← your hardcoded default start directory:
+  final Directory defaultDir = Directory(r'E:\src\social_learning');
 
-class _FileCollectorPageState extends State<FileCollectorPage> {
-  /// The invisible root node; we'll show only its children
-  late final TreeNode root = TreeNode.root();
-
-  /// All file paths in the tree; used to detect files vs folders
-  final Set<String> filePaths = {};
-
-  /// Which files are checked for download
-  final Set<String> _selectedFiles = {};
-
-  /// Controller we get back once the TreeView is ready
-  TreeViewController<TreeNode>? _controller;
+  List<FileNode> roots = [];
 
   @override
   void initState() {
     super.initState();
-    _loadFileTree();
+    _loadRoot();
   }
 
-  /// Recursively builds TreeNode children under [path]
-  Future<List<TreeNode>> _buildNodes(String path) async {
-    final List<TreeNode> list = [];
-    try {
-      final dir = Directory(path);
-      final entities = dir.listSync();
-      entities.sort((a, b) {
-        // directories first, then alphabetic
-        if (a is Directory && b is File) return -1;
-        if (a is File && b is Directory) return 1;
-        return a.path.toLowerCase().compareTo(b.path.toLowerCase());
+  void _loadRoot() async {
+    if (await defaultDir.exists()) {
+      final ents = defaultDir.listSync();
+      setState(() {
+        roots = ents.map((e) => FileNode(entity: e)).toList();
       });
-      for (final e in entities) {
-        final key = e.path;
-        if (e is Directory) {
-          final node = TreeNode(key: key);
-          final children = await _buildNodes(key);
-          if (children.isNotEmpty) node.addAll(children);
-          list.add(node);
-        } else if (e is File) {
-          list.add(TreeNode(key: key));
-          filePaths.add(key);
-        }
-      }
-    } catch (_) {
-      // ignore unreadable folders
+    } else {
+      // Fallback or error message if directory missing
+      setState(() {
+        roots = [];
+      });
     }
+  }
+
+  List<_NodeEntry> _visibleNodes() {
+    final list = <_NodeEntry>[];
+    void traverse(FileNode node, int depth) {
+      list.add(_NodeEntry(node: node, depth: depth));
+      if (node.isExpanded && node.children != null) {
+        for (var c in node.children!) traverse(c, depth + 1);
+      }
+    }
+
+    for (var r in roots) traverse(r, 0);
     return list;
   }
 
-  Future<void> _loadFileTree() async {
-    final children = await _buildNodes(defaultPath);
-    setState(() {
-      root
-        ..children.clear()
-        ..addAll(children);
-    });
-  }
-
-  /// Called when you tap any node
-  void _onItemTap(TreeNode node) async {
-    final key = node.key;
-    // If it’s a file → copy to clipboard
-    if (filePaths.contains(key)) {
-      try {
-        final text = await File(key).readAsString();
-        await Clipboard.setData(ClipboardData(text: text));
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Copied "${p.basename(key)}" to clipboard')),
-        );
-      } catch (_) {}
-    } else {
-      // Directory → toggle expand/collapse
-      if (_controller != null) {
-        if (node.isExpanded) {
-          _controller!.collapseNode(node);
-        } else {
-          _controller!.expandNode(node);
-        }
+  Future<void> _toggleNode(FileNode node) async {
+    if (node.entity is Directory) {
+      if (!node.isExpanded && node.children == null) {
+        node.isLoading = true;
+        setState(() {});
+        final children = (node.entity as Directory).listSync();
+        node.children =
+            children.map((e) => FileNode(entity: e)).toList();
+        node.isLoading = false;
       }
+      node.isExpanded = !node.isExpanded;
+      setState(() {});
     }
   }
 
-  /// Renders each node: folder icon vs file+checkbox
-  Widget _nodeBuilder(BuildContext context, TreeNode node) {
-    final key = node.key;
-    final isFile = filePaths.contains(key);
-    final checked = _selectedFiles.contains(key);
-    return Padding(
-      padding: const EdgeInsets.only(left: 8.0),
-      child: Row(
-        children: [
-          if (isFile)
-            Checkbox(
-              value: checked,
-              onChanged: (v) {
-                setState(() {
-                  if (v == true)
-                    _selectedFiles.add(key);
-                  else
-                    _selectedFiles.remove(key);
-                });
-              },
-            )
-          else
-            const SizedBox(width: 40),
-          Icon(
-            isFile ? Icons.insert_drive_file : Icons.folder,
-            size: 18,
-          ),
-          const SizedBox(width: 4),
-          Expanded(child: Text(p.basename(key))),
-        ],
-      ),
-    );
+  Future<void> _onFileTap(FileNode node) async {
+    if (node.entity is File) {
+      final txt = await (node.entity as File).readAsString();
+      await Clipboard.setData(ClipboardData(text: txt));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Copied "${p.basename(node.entity.path)}"')),
+      );
+    }
   }
 
-  /// Concatenate all checked files and write to Downloads/collected.txt
   Future<void> _downloadSelected() async {
-    final buffer = StringBuffer();
-    for (final path in _selectedFiles) {
-      try {
-        buffer.writeln(await File(path).readAsString());
-        buffer.writeln('\n');
-      } catch (_) {}
+    final sels = <File>[];
+    void collect(FileNode n) {
+      if (n.entity is File && n.isSelected) sels.add(n.entity as File);
+      if (n.children != null) for (var c in n.children!) collect(c);
     }
-    Directory? dl = await getDownloadsDirectory();
-    final downloadsPath = dl?.path ??
-        (Platform.environment['USERPROFILE']! + r'\Downloads');
-    final outFile = File(p.join(downloadsPath, 'collected.txt'));
-    await outFile.writeAsString(buffer.toString());
+
+    for (var r in roots) collect(r);
+
+    if (sels.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No files checked.')),
+      );
+      return;
+    }
+
+    final buf = StringBuffer();
+    for (var f in sels) {
+      buf.writeln(await f.readAsString());
+      buf.writeln('\n');
+    }
+
+    // getDownloadsDirectory works on Windows as of path_provider ≥2.0.14
+    final downloadsDir = await getDownloadsDirectory() ??
+        Directory('${Platform.environment['USERPROFILE']}\\Downloads');
+    final outFile = File(
+      '${downloadsDir.path}\\collected_${DateTime.now().millisecondsSinceEpoch}.txt',
+    );
+    await outFile.writeAsString(buf.toString());
+
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Saved to ${outFile.path}')),
+      SnackBar(content: Text('Saved to "${outFile.path}"')),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('File Collector')),
-      body: root.children.isEmpty
-          ? const Center(child: CircularProgressIndicator())
-          : TreeView.simple(
-        tree: root,
-        showRootNode: false,
-        // ± expander indicator :contentReference[oaicite:1]{index=1}
-        expansionIndicatorBuilder: (ctx, node) =>
-            PlusMinusIndicator(tree: node),
-        // square-joint connector lines :contentReference[oaicite:2]{index=2}
-        indentation: const Indentation(style: IndentStyle.squareJoint),
-        onTreeReady: (ctr) => _controller = ctr,
-        onItemTap: _onItemTap,
-        builder: _nodeBuilder,
-      ),
-      floatingActionButton: FloatingActionButton(
-        tooltip: 'Download selected files',
-        onPressed: _downloadSelected,
-        child: const Icon(Icons.download),
+    final nodes = _visibleNodes();
+    return MaterialApp(
+      title: 'File Collector',
+      home: Scaffold(
+        appBar: AppBar(title: Text('File Collector')),
+        body: Column(
+          children: [
+            Expanded(
+              child: ListView.builder(
+                itemCount: nodes.length,
+                itemBuilder: (ctx, i) {
+                  final entry = nodes[i];
+                  final node = entry.node;
+                  final indent = entry.depth * 16.0;
+                  final isDir = node.entity is Directory;
+                  return Padding(
+                    padding: EdgeInsets.only(left: indent),
+                    child: Row(
+                      children: [
+                        // expand/collapse icon for directories
+                        if (isDir)
+                          InkWell(
+                            onTap: () => _toggleNode(node),
+                            child: Padding(
+                              padding: const EdgeInsets.all(8.0),
+                              child: Icon(
+                                node.isExpanded ? Icons.remove : Icons.add,
+                                size: 16,
+                              ),
+                            ),
+                          )
+                        else
+                          SizedBox(width: 32),
+                        // checkbox for files only
+                        if (!isDir)
+                          Checkbox(
+                            value: node.isSelected,
+                            onChanged: (v) {
+                              node.isSelected = v ?? false;
+                              setState(() {});
+                            },
+                          ),
+                        // file/folder name
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => _onFileTap(node),
+                            child: Text(
+                              p.basename(node.entity.path),
+                              style: TextStyle(
+                                color:
+                                isDir ? Colors.black87 : Colors.blueAccent,
+                                decoration:
+                                isDir ? null : TextDecoration.underline,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            Padding(
+              padding: EdgeInsets.all(12),
+              child: ElevatedButton.icon(
+                icon: Icon(Icons.download),
+                label: Text('Download Selected'),
+                onPressed: _downloadSelected,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
+}
+
+/// Holds each file/directory in the tree.
+class FileNode {
+  final FileSystemEntity entity;
+  bool isExpanded = false;
+  bool isLoading = false;
+  bool isSelected = false; // only meaningful for files
+  List<FileNode>? children;
+
+  FileNode({required this.entity});
+}
+
+/// Pair of node + its depth in the tree for rendering.
+class _NodeEntry {
+  final FileNode node;
+  final int depth;
+  _NodeEntry({required this.node, required this.depth});
 }
