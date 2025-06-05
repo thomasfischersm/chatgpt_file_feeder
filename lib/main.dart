@@ -29,11 +29,19 @@ class _FileCollectorAppState extends State<FileCollectorApp> {
   void _loadRoot() async {
     if (await defaultDir.exists()) {
       final ents = defaultDir.listSync();
+      final sorted = ents.toList()
+        ..sort((a, b) {
+          final aIsDir = a is Directory;
+          final bIsDir = b is Directory;
+          if (aIsDir && !bIsDir) return -1;
+          if (!aIsDir && bIsDir) return 1;
+          return p.basename(a.path).toLowerCase().compareTo(
+              p.basename(b.path).toLowerCase());
+        });
       setState(() {
-        roots = ents.map((e) => FileNode(entity: e)).toList();
+        roots = sorted.map((e) => FileNode(entity: e)).toList();
       });
     } else {
-      // Fallback or error message if directory missing
       setState(() {
         roots = [];
       });
@@ -59,8 +67,17 @@ class _FileCollectorAppState extends State<FileCollectorApp> {
         node.isLoading = true;
         setState(() {});
         final children = (node.entity as Directory).listSync();
-        node.children =
-            children.map((e) => FileNode(entity: e)).toList();
+        // Sort: directories first, then files, both alphabetically
+        final sorted = children.toList()
+          ..sort((a, b) {
+            final aIsDir = a is Directory;
+            final bIsDir = b is Directory;
+            if (aIsDir && !bIsDir) return -1;
+            if (!aIsDir && bIsDir) return 1;
+            return p.basename(a.path).toLowerCase().compareTo(
+                p.basename(b.path).toLowerCase());
+          });
+        node.children = sorted.map((e) => FileNode(entity: e)).toList();
         node.isLoading = false;
       }
       node.isExpanded = !node.isExpanded;
